@@ -1,0 +1,9 @@
+{
+  "auth": {
+    "login": "Login",
+    "profile": "Profile"
+  },
+  "home": {
+    "title": "Home"
+  }
+}
