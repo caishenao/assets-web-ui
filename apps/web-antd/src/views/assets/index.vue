@@ -1,4 +1,4 @@
-﻿<script lang="ts" setup>
+<script lang="ts" setup>
 import type {
   AssetCategory,
   AssetDashboard,
@@ -9,16 +9,25 @@ import type {
   AssetRepairRecord,
 } from '#/api/asset';
 
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, h, onMounted, ref, shallowRef } from 'vue';
+
+import { Page } from '@vben/common-ui';
+
+import {
+  Button,
+  Card,
+  Col,
+  message,
+  Row,
+  Space,
+  Statistic,
+  Table,
+  Tag,
+} from 'ant-design-vue';
 
 import {
   calculateDepreciationApi,
-  completeRepairApi,
-  createAssetApi,
-  createAssetCategoryApi,
   createInventoryTaskApi,
-  createRepairOrderApi,
-  createUseOrderApi,
   getAssetCategoriesApi,
   getAssetDashboardApi,
   getAssetFlowsApi,
@@ -26,83 +35,34 @@ import {
   getDepreciationRecordsApi,
   getInventoryTasksApi,
   getRepairRecordsApi,
-  returnAssetApi,
-  scrapAssetApi,
-  transferAssetApi,
 } from '#/api/asset';
+
+import { useVbenVxeGrid } from '#/adapter/vxe-table';
+
+import AssetFormDrawer from './components/asset-form-drawer.vue';
+import CategoryFormDrawer from './components/category-form-drawer.vue';
+import OperationDrawer from './components/operation-drawer.vue';
 
 defineOptions({ name: 'AssetsWorkbench' });
 
-const statusOptions = [
-  { label: 'Draft', value: 0 },
-  { label: 'In Stock', value: 1 },
-  { label: 'Idle', value: 2 },
-  { label: 'In Use', value: 3 },
-  { label: 'Repairing', value: 5 },
-  { label: 'Pending Scrap', value: 7 },
-  { label: 'Scrapped', value: 8 },
-  { label: 'Lost', value: 9 },
-];
-
+// --- State ---
 const dashboard = ref<AssetDashboard>();
-const categories = ref<AssetCategory[]>([]);
-const assets = ref<AssetInfo[]>([]);
-const flows = ref<AssetFlowRecord[]>([]);
-const repairs = ref<AssetRepairRecord[]>([]);
-const inventoryTasks = ref<AssetInventoryTask[]>([]);
-const depreciations = ref<AssetDepreciationRecord[]>([]);
+const categories = shallowRef<AssetCategory[]>([]);
+const assets = shallowRef<AssetInfo[]>([]);
+const flows = shallowRef<AssetFlowRecord[]>([]);
+const repairs = shallowRef<AssetRepairRecord[]>([]);
+const inventoryTasks = shallowRef<AssetInventoryTask[]>([]);
+const depreciations = shallowRef<AssetDepreciationRecord[]>([]);
 const total = ref(0);
 const loading = ref(false);
-const activeTab = ref('ledger');
-const selectedAssetId = ref<number>();
+const selectedRowKeys = ref<number[]>([]);
 
-const filters = reactive({
-  assetCode: '',
-  assetName: '',
-  categoryId: undefined as number | undefined,
-  pageNo: 1,
-  pageSize: 20,
-  status: undefined as number | undefined,
-});
+// Drawer refs
+const assetFormDrawerRef = ref<InstanceType<typeof AssetFormDrawer>>();
+const categoryFormDrawerRef = ref<InstanceType<typeof CategoryFormDrawer>>();
+const operationDrawerRef = ref<InstanceType<typeof OperationDrawer>>();
 
-const assetForm = reactive({
-  assetName: 'New Asset',
-  brand: '',
-  categoryId: undefined as number | undefined,
-  model: '',
-  originalValue: 1000,
-  purchasePrice: 1000,
-  serialNumber: '',
-});
-
-const categoryForm = reactive({
-  assetType: 'Fixed Asset',
-  categoryCode: '',
-  categoryName: '',
-  defaultLifeMonth: 60,
-  defaultResidualRate: 0.05,
-  depreciationRequired: true,
-});
-
-const operationForm = reactive({
-  applicantName: 'Demo User',
-  departmentName: 'Administration',
-  faultDescription: 'Device failure',
-  locationName: 'A-101',
-  reason: 'Business change',
-  repairDescription: 'Repaired and verified',
-  toDepartmentName: 'Operations',
-  toUserName: 'Li Si',
-});
-
-const selectedAsset = computed(() =>
-  assets.value.find((asset) => asset.id === selectedAssetId.value),
-);
-
-const categoryMap = computed(() =>
-  Object.fromEntries(categories.value.map((item) => [item.id, item.categoryName])),
-);
-
+// --- Helpers ---
 function money(value?: number) {
   return new Intl.NumberFormat('zh-CN', {
     currency: 'CNY',
@@ -111,18 +71,120 @@ function money(value?: number) {
   }).format(value ?? 0);
 }
 
-function statusClass(status: number) {
-  if ([1, 2].includes(status)) return 'ok';
-  if (status === 3) return 'work';
-  if ([5, 6, 7, 9].includes(status)) return 'warn';
-  if (status === 8) return 'off';
-  return 'draft';
+function statusColor(status: number): string {
+  const map: Record<number, string> = {
+    0: 'default',
+    1: 'green',
+    2: 'cyan',
+    3: 'blue',
+    5: 'orange',
+    7: 'gold',
+    8: 'red',
+    9: 'volcano',
+  };
+  return map[status] ?? 'default';
 }
 
-function selectAsset(asset: AssetInfo) {
-  selectedAssetId.value = asset.id;
+const selectedAsset = computed(() =>
+  assets.value.find((a) => a.id === selectedRowKeys.value[0]),
+);
+
+// --- VxeGrid for Ledger ---
+const [LedgerGrid, ledgerGridApi] = useVbenVxeGrid<AssetInfo>({
+  gridOptions: {
+    columns: [
+      { field: 'assetCode', title: '资产编号', width: 140 },
+      {
+        field: 'assetName',
+        title: '资产名称',
+        minWidth: 160,
+        slots: { default: 'assetNameCell' },
+      },
+      { field: 'categoryName', title: '分类', width: 120 },
+      {
+        field: 'status',
+        title: '状态',
+        width: 100,
+        slots: { default: 'statusCell' },
+      },
+      { field: 'departmentName', title: '部门', width: 120 },
+      { field: 'userName', title: '使用人', width: 100 },
+      { field: 'locationName', title: '位置', width: 120 },
+      {
+        field: 'netValue',
+        title: '净值',
+        width: 120,
+        formatter: ({ cellValue }: any) => money(cellValue),
+      },
+    ],
+    keepSource: true,
+    proxyConfig: {
+      autoLoad: true,
+      response: { result: 'records', total: 'total' },
+      showActiveMsg: true,
+    },
+    rowConfig: { keyField: 'id', isCurrent: true, useKey: true },
+    pagerConfig: { pageSize: 20 },
+  },
+  showSearchForm: true,
+  formOptions: {
+    schema: [
+      {
+        component: 'Input',
+        fieldName: 'assetCode',
+        label: '资产编号',
+        componentProps: { placeholder: '请输入编号' },
+      },
+      {
+        component: 'Input',
+        fieldName: 'assetName',
+        label: '资产名称',
+        componentProps: { placeholder: '请输入名称' },
+      },
+      {
+        component: 'Select',
+        fieldName: 'status',
+        label: '状态',
+        componentProps: {
+          allowClear: true,
+          options: [
+            { label: '在库', value: 1 },
+            { label: '闲置', value: 2 },
+            { label: '在用', value: 3 },
+            { label: '维修中', value: 5 },
+            { label: '待报废', value: 7 },
+            { label: '已报废', value: 8 },
+          ],
+          placeholder: '全部状态',
+        },
+      },
+    ],
+    commonConfig: { formItemClass: 'col-span-1' },
+    wrapperClass: 'grid-cols-3',
+    handleReset: handleSearchReset,
+    handleSubmit: handleSearch,
+  },
+});
+
+async function handleSearch(values: Record<string, any>) {
+  const data = await getAssetListApi({
+    ...values,
+    pageNo: 1,
+    pageSize: 20,
+  });
+  assets.value = data.records;
+  total.value = data.total;
+  ledgerGridApi.grid?.reloadData(data.records);
 }
 
+async function handleSearchReset() {
+  const data = await getAssetListApi({ pageNo: 1, pageSize: 20 });
+  assets.value = data.records;
+  total.value = data.total;
+  ledgerGridApi.grid?.reloadData(data.records);
+}
+
+// --- Data Loading ---
 async function loadAll() {
   loading.value = true;
   try {
@@ -137,7 +199,7 @@ async function loadAll() {
     ] = await Promise.all([
       getAssetDashboardApi(),
       getAssetCategoriesApi(),
-      getAssetListApi(filters),
+      getAssetListApi({ pageNo: 1, pageSize: 20 }),
       getAssetFlowsApi(),
       getRepairRecordsApi(),
       getInventoryTasksApi(),
@@ -151,382 +213,312 @@ async function loadAll() {
     repairs.value = repairData;
     inventoryTasks.value = inventoryData;
     depreciations.value = depreciationData;
-    selectedAssetId.value = selectedAssetId.value ?? assets.value[0]?.id;
-    assetForm.categoryId = assetForm.categoryId ?? categories.value[0]?.id;
+    ledgerGridApi.grid?.reloadData(assetData.records);
   } finally {
     loading.value = false;
   }
 }
 
-async function searchAssets() {
-  filters.pageNo = 1;
-  const data = await getAssetListApi(filters);
-  assets.value = data.records;
-  total.value = data.total;
-  selectedAssetId.value = assets.value[0]?.id;
+// --- Operations ---
+function openCreateAsset() {
+  assetFormDrawerRef.value?.openDrawer();
 }
 
-async function createAsset() {
-  if (!assetForm.categoryId) return;
-  await createAssetApi({
-    ...assetForm,
-    categoryName: categoryMap.value[assetForm.categoryId],
-    status: 2,
-  });
-  await loadAll();
+function openCreateCategory() {
+  categoryFormDrawerRef.value?.openDrawer();
 }
 
-async function createCategory() {
-  await createAssetCategoryApi(categoryForm);
-  categoryForm.categoryCode = '';
-  categoryForm.categoryName = '';
-  await loadAll();
-}
-
-function requireSelected() {
+function openOperation(type: 'repair' | 'return' | 'scrap' | 'transfer' | 'use') {
   if (!selectedAsset.value) {
-    throw new Error('Select an asset first');
+    message.warning('请先在台账中选择一笔资产');
+    return;
   }
-  return selectedAsset.value;
+  operationDrawerRef.value?.openDrawer(type, selectedAsset.value);
 }
 
-async function useSelectedAsset() {
-  const asset = requireSelected();
-  await createUseOrderApi({
-    applicantId: 3001,
-    applicantName: operationForm.applicantName,
-    assetIds: [asset.id],
-    departmentId: 2001,
-    departmentName: operationForm.departmentName,
-    locationName: operationForm.locationName,
-    useReason: operationForm.reason,
-  });
-  await loadAll();
-}
-
-async function returnSelectedAsset(returnStatus = 'NORMAL') {
-  const asset = requireSelected();
-  await returnAssetApi({
-    assetId: asset.id,
-    returnStatus,
-    returnUserId: asset.userId,
-    remark: operationForm.reason,
-  });
-  await loadAll();
-}
-
-async function transferSelectedAsset() {
-  const asset = requireSelected();
-  await transferAssetApi({
-    assetIds: [asset.id],
-    reason: operationForm.reason,
-    toDepartmentId: 2002,
-    toDepartmentName: operationForm.toDepartmentName,
-    toLocationName: operationForm.locationName,
-    toUserId: 3002,
-    toUserName: operationForm.toUserName,
-  });
-  await loadAll();
-}
-
-async function repairSelectedAsset() {
-  const asset = requireSelected();
-  const repair = await createRepairOrderApi({
-    assetId: asset.id,
-    faultDescription: operationForm.faultDescription,
-    repairType: 'INTERNAL',
-    repairUserName: 'Repair Engineer',
-  });
-  await completeRepairApi(repair.id, {
-    laborCost: 120,
-    materialCost: 80,
-    repairDescription: operationForm.repairDescription,
-    repairResult: 'FIXED',
-  });
-  await loadAll();
-}
-
-async function scrapSelectedAsset() {
-  const asset = requireSelected();
-  await scrapAssetApi({
-    assetId: asset.id,
-    disposalMethod: 'RECYCLE',
-    reason: operationForm.reason,
-  });
-  await loadAll();
-}
-
-async function createInventoryTask() {
+async function createInventory() {
   await createInventoryTaskApi({
     inventoryScope: 'ALL',
-    taskName: `Inventory ${new Date().toISOString().slice(0, 10)}`,
+    taskName: `盘点任务 ${new Date().toISOString().slice(0, 10)}`,
   });
+  message.success('盘点任务已创建');
   await loadAll();
 }
 
-async function calculateDepreciation() {
+async function runDepreciation() {
   await calculateDepreciationApi(new Date().toISOString().slice(0, 7));
+  message.success('折旧计算完成');
   await loadAll();
 }
+
+function onRowClick({ row }: any) {
+  selectedRowKeys.value = [row.id];
+}
+
+// --- Table Columns ---
+const flowColumns = [
+  { title: '类型', dataIndex: 'flowType', key: 'flowType', width: 100 },
+  { title: '资产', dataIndex: 'assetName', key: 'assetName' },
+  {
+    title: '状态变更',
+    key: 'statusChange',
+    customRender: ({ record }: any) =>
+      `${record.beforeStatusName || '-'} → ${record.afterStatusName || '-'}`,
+  },
+  { title: '备注', dataIndex: 'remark', key: 'remark' },
+  { title: '时间', dataIndex: 'operateTime', key: 'operateTime', width: 180 },
+];
+
+const repairColumns = [
+  { title: '工单号', dataIndex: 'workOrderNo', key: 'workOrderNo', width: 160 },
+  { title: '资产', dataIndex: 'assetName', key: 'assetName' },
+  { title: '结果', dataIndex: 'repairResult', key: 'repairResult', width: 100 },
+  {
+    title: '费用',
+    key: 'totalCost',
+    width: 120,
+    customRender: ({ record }: any) => money(record.totalCost),
+  },
+];
+
+const categoryColumns = [
+  { title: '分类名称', dataIndex: 'categoryName', key: 'categoryName' },
+  { title: '分类编码', dataIndex: 'categoryCode', key: 'categoryCode', width: 140 },
+  { title: '资产类型', dataIndex: 'assetType', key: 'assetType', width: 120 },
+  {
+    title: '折旧',
+    key: 'depreciation',
+    width: 100,
+    customRender: ({ record }: any) => {
+      return record.depreciationRequired
+        ? h(Tag, { color: 'blue' }, () => '需要折旧')
+        : h(Tag, null, () => '不折旧');
+    },
+  },
+];
+
+const inventoryColumns = [
+  { title: '任务名称', dataIndex: 'taskName', key: 'taskName' },
+  { title: '任务编号', dataIndex: 'taskNo', key: 'taskNo', width: 160 },
+  {
+    title: '状态',
+    key: 'status',
+    width: 100,
+    customRender: ({ record }: any) => {
+      return record.status === 2
+        ? h(Tag, { color: 'green' }, () => '已完成')
+        : h(Tag, { color: 'processing' }, () => '进行中');
+    },
+  },
+];
+
+const depreciationColumns = [
+  { title: '资产名称', dataIndex: 'assetName', key: 'assetName' },
+  { title: '折旧月份', dataIndex: 'depreciationMonth', key: 'depreciationMonth', width: 120 },
+  {
+    title: '月折旧额',
+    key: 'monthlyDepreciation',
+    width: 120,
+    customRender: ({ record }: any) => money(record.monthlyDepreciation),
+  },
+  {
+    title: '净值',
+    key: 'netValue',
+    width: 120,
+    customRender: ({ record }: any) => money(record.netValue),
+  },
+];
 
 onMounted(loadAll);
 </script>
 
 <template>
-  <main class="asset-page">
-    <section class="asset-toolbar">
-      <div>
-        <h1>Asset Management Platform</h1>
-        <p>Asset intake, use, return, transfer, repair, inventory, depreciation and scrap workflow.</p>
+  <Page>
+    <!-- Dashboard Metrics -->
+    <Row :gutter="[16, 16]" class="mb-5">
+      <Col :xs="12" :sm="6">
+        <Card :bordered="false" class="shadow-sm">
+          <Statistic
+            title="资产总数"
+            :value="dashboard?.totalAssets ?? 0"
+            suffix="件"
+          />
+          <div class="text-muted mt-1 text-xs">
+            本月新增 {{ dashboard?.monthNewAssets ?? 0 }}
+          </div>
+        </Card>
+      </Col>
+      <Col :xs="12" :sm="6">
+        <Card :bordered="false" class="shadow-sm">
+          <Statistic
+            title="资产原值"
+            :value="dashboard?.originalValue ?? 0"
+            :formatter="() => money(dashboard?.originalValue)"
+          />
+          <div class="text-muted mt-1 text-xs">
+            净值 {{ money(dashboard?.netValue) }}
+          </div>
+        </Card>
+      </Col>
+      <Col :xs="12" :sm="6">
+        <Card :bordered="false" class="shadow-sm">
+          <Statistic
+            title="在用资产"
+            :value="dashboard?.inUseAssets ?? 0"
+            suffix="件"
+          />
+          <div class="text-muted mt-1 text-xs">
+            闲置 {{ dashboard?.idleAssets ?? 0 }}
+          </div>
+        </Card>
+      </Col>
+      <Col :xs="12" :sm="6">
+        <Card :bordered="false" class="shadow-sm">
+          <Statistic
+            title="风险资产"
+            :value="(dashboard?.repairingAssets ?? 0) + (dashboard?.pendingScrapAssets ?? 0)"
+            suffix="件"
+            :value-style="{ color: '#faad14' }"
+          />
+          <div class="text-muted mt-1 text-xs">
+            维修 {{ dashboard?.repairingAssets ?? 0 }} / 待报废 {{ dashboard?.pendingScrapAssets ?? 0 }}
+          </div>
+        </Card>
+      </Col>
+    </Row>
+
+    <!-- Main Content -->
+    <Card :bordered="false" class="shadow-sm">
+      <template #title>
+        <div class="flex items-center gap-2">
+          <span class="text-lg font-semibold">资产管理</span>
+          <span class="text-muted text-xs">共 {{ total }} 条记录</span>
+        </div>
+      </template>
+      <template #extra>
+        <Space>
+          <Button type="primary" @click="openCreateAsset">新增资产</Button>
+          <Button @click="loadAll" :loading="loading">刷新</Button>
+        </Space>
+      </template>
+
+      <!-- Ledger with VxeGrid -->
+      <LedgerGrid @cell-click="onRowClick">
+        <template #assetNameCell="{ row }">
+          <div class="flex flex-col">
+            <span class="font-medium">{{ row.assetName }}</span>
+            <span class="text-muted text-xs">{{ row.brand }} {{ row.model }}</span>
+          </div>
+        </template>
+        <template #statusCell="{ row }">
+          <Tag :color="statusColor(row.status)">
+            {{ row.statusName }}
+          </Tag>
+        </template>
+      </LedgerGrid>
+
+      <!-- Workflow Actions -->
+      <div class="mt-4 flex flex-wrap gap-2 border-t pt-4">
+        <span class="text-muted mr-2 text-sm leading-8">
+          选中：{{ selectedAsset?.assetName || '未选择' }}
+        </span>
+        <Button size="small" @click="openOperation('use')">领用</Button>
+        <Button size="small" @click="openOperation('return')">归还</Button>
+        <Button size="small" @click="openOperation('transfer')">调拨</Button>
+        <Button size="small" @click="openOperation('repair')">维修</Button>
+        <Button size="small" danger @click="openOperation('scrap')">报废</Button>
       </div>
-      <button class="primary" :disabled="loading" @click="loadAll">Refresh</button>
-    </section>
+    </Card>
 
-    <section class="metric-grid">
-      <article class="metric">
-        <span>Total Assets</span>
-        <strong>{{ dashboard?.totalAssets ?? 0 }}</strong>
-        <small>New this month {{ dashboard?.monthNewAssets ?? 0 }}</small>
-      </article>
-      <article class="metric">
-        <span>Original Value</span>
-        <strong>{{ money(dashboard?.originalValue) }}</strong>
-        <small>Net value {{ money(dashboard?.netValue) }}</small>
-      </article>
-      <article class="metric">
-        <span>In Use</span>
-        <strong>{{ dashboard?.inUseAssets ?? 0 }}</strong>
-        <small>Idle {{ dashboard?.idleAssets ?? 0 }}</small>
-      </article>
-      <article class="metric">
-        <span>Risk Assets</span>
-        <strong>{{ (dashboard?.repairingAssets ?? 0) + (dashboard?.pendingScrapAssets ?? 0) }}</strong>
-        <small>Repair {{ dashboard?.repairingAssets ?? 0 }} / Scrap {{ dashboard?.pendingScrapAssets ?? 0 }}</small>
-      </article>
-    </section>
+    <!-- Secondary Sections -->
+    <Row :gutter="[16, 16]" class="mt-5">
+      <Col :xs="24" :lg="14">
+        <Card :bordered="false" class="shadow-sm" title="流转记录">
+          <Table
+            :columns="flowColumns"
+            :data-source="flows"
+            :pagination="{ pageSize: 8 }"
+            size="small"
+            row-key="id"
+          />
+        </Card>
+      </Col>
+      <Col :xs="24" :lg="10">
+        <Card :bordered="false" class="shadow-sm" title="维修记录">
+          <Table
+            :columns="repairColumns"
+            :data-source="repairs"
+            :pagination="{ pageSize: 8 }"
+            size="small"
+            row-key="id"
+          />
+        </Card>
+      </Col>
+    </Row>
 
-    <section class="tabs">
-      <button :class="{ active: activeTab === 'ledger' }" @click="activeTab = 'ledger'">Ledger</button>
-      <button :class="{ active: activeTab === 'flow' }" @click="activeTab = 'flow'">Flows</button>
-      <button :class="{ active: activeTab === 'category' }" @click="activeTab = 'category'">Categories</button>
-      <button :class="{ active: activeTab === 'inventory' }" @click="activeTab = 'inventory'">Inventory</button>
-    </section>
+    <Row :gutter="[16, 16]" class="mt-5">
+      <Col :xs="24" :lg="12">
+        <Card :bordered="false" class="shadow-sm" title="资产分类">
+          <template #extra>
+            <Button size="small" type="primary" @click="openCreateCategory">新增分类</Button>
+          </template>
+          <Table
+            :columns="categoryColumns"
+            :data-source="categories"
+            :pagination="false"
+            size="small"
+            row-key="id"
+          />
+        </Card>
+      </Col>
+      <Col :xs="24" :lg="12">
+        <Card :bordered="false" class="shadow-sm" title="盘点任务">
+          <template #extra>
+            <Button size="small" type="primary" @click="createInventory">创建盘点</Button>
+          </template>
+          <Table
+            :columns="inventoryColumns"
+            :data-source="inventoryTasks"
+            :pagination="false"
+            size="small"
+            row-key="id"
+          />
+        </Card>
 
-    <section v-if="activeTab === 'ledger'" class="workbench">
-      <div class="panel grow">
-        <div class="panel-title">
-          <h2>Asset Ledger</h2>
-          <span>{{ total }} records</span>
-        </div>
-        <div class="filters">
-          <input v-model="filters.assetCode" placeholder="Asset code" />
-          <input v-model="filters.assetName" placeholder="Asset name" />
-          <select v-model="filters.categoryId">
-            <option :value="undefined">All categories</option>
-            <option v-for="item in categories" :key="item.id" :value="item.id">
-              {{ item.categoryName }}
-            </option>
-          </select>
-          <select v-model="filters.status">
-            <option :value="undefined">All status</option>
-            <option v-for="item in statusOptions" :key="item.value" :value="item.value">
-              {{ item.label }}
-            </option>
-          </select>
-          <button class="primary" @click="searchAssets">Search</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Code</th>
-                <th>Name</th>
-                <th>Category</th>
-                <th>Status</th>
-                <th>Department</th>
-                <th>User</th>
-                <th>Location</th>
-                <th>Net Value</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="asset in assets"
-                :key="asset.id"
-                :class="{ selected: asset.id === selectedAssetId }"
-                @click="selectAsset(asset)"
-              >
-                <td>{{ asset.assetCode }}</td>
-                <td>
-                  <strong>{{ asset.assetName }}</strong>
-                  <small>{{ asset.brand }} {{ asset.model }}</small>
-                </td>
-                <td>{{ asset.categoryName }}</td>
-                <td><span class="status" :class="statusClass(asset.status)">{{ asset.statusName }}</span></td>
-                <td>{{ asset.departmentName || 'Unassigned' }}</td>
-                <td>{{ asset.userName || '-' }}</td>
-                <td>{{ asset.locationName || '-' }}</td>
-                <td>{{ money(asset.netValue) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+        <Card :bordered="false" class="shadow-sm mt-5" title="折旧记录">
+          <template #extra>
+            <Button size="small" @click="runDepreciation">执行折旧</Button>
+          </template>
+          <Table
+            :columns="depreciationColumns"
+            :data-source="depreciations"
+            :pagination="{ pageSize: 6 }"
+            size="small"
+            row-key="id"
+          />
+        </Card>
+      </Col>
+    </Row>
 
-      <aside class="panel side">
-        <div class="panel-title"><h2>Quick Intake</h2></div>
-        <label>Name<input v-model="assetForm.assetName" /></label>
-        <label>Category
-          <select v-model="assetForm.categoryId">
-            <option v-for="item in categories" :key="item.id" :value="item.id">
-              {{ item.categoryName }}
-            </option>
-          </select>
-        </label>
-        <label>Brand<input v-model="assetForm.brand" /></label>
-        <label>Model<input v-model="assetForm.model" /></label>
-        <label>Original Value<input v-model.number="assetForm.originalValue" type="number" /></label>
-        <button class="primary wide" @click="createAsset">Create Asset</button>
-
-        <div class="divider"></div>
-        <div class="panel-title compact">
-          <h2>Workflow</h2>
-          <span>{{ selectedAsset?.assetName || 'No asset selected' }}</span>
-        </div>
-        <label>Department<input v-model="operationForm.departmentName" /></label>
-        <label>User<input v-model="operationForm.applicantName" /></label>
-        <label>Location<input v-model="operationForm.locationName" /></label>
-        <div class="action-grid">
-          <button @click="useSelectedAsset">Use</button>
-          <button @click="returnSelectedAsset('NORMAL')">Return</button>
-          <button @click="transferSelectedAsset">Transfer</button>
-          <button @click="repairSelectedAsset">Repair</button>
-          <button @click="returnSelectedAsset('FAULT')">Fault Return</button>
-          <button class="danger" @click="scrapSelectedAsset">Scrap</button>
-        </div>
-      </aside>
-    </section>
-
-    <section v-if="activeTab === 'flow'" class="workbench">
-      <div class="panel grow">
-        <div class="panel-title"><h2>Asset Flow Records</h2></div>
-        <div class="timeline">
-          <article v-for="flow in flows" :key="flow.id">
-            <span>{{ flow.flowType }}</span>
-            <strong>{{ flow.assetName }}</strong>
-            <p>{{ flow.beforeStatusName || '-' }} -> {{ flow.afterStatusName || '-' }} 路 {{ flow.remark || 'No remark' }}</p>
-            <small>{{ flow.operateTime }}</small>
-          </article>
-        </div>
-      </div>
-      <aside class="panel side">
-        <div class="panel-title"><h2>Repair History</h2></div>
-        <article v-for="record in repairs" :key="record.id" class="list-card">
-          <strong>{{ record.workOrderNo }}</strong>
-          <span>{{ record.assetName }}</span>
-          <small>{{ record.repairResult }} / {{ money(record.totalCost) }}</small>
-        </article>
-      </aside>
-    </section>
-
-    <section v-if="activeTab === 'category'" class="workbench">
-      <div class="panel grow">
-        <div class="panel-title"><h2>Asset Categories</h2></div>
-        <div class="category-grid">
-          <article v-for="item in categories" :key="item.id">
-            <strong>{{ item.categoryName }}</strong>
-            <span>{{ item.categoryCode }}</span>
-            <small>{{ item.assetType }} 路 {{ item.depreciationRequired ? 'Depreciable' : 'No depreciation' }}</small>
-          </article>
-        </div>
-      </div>
-      <aside class="panel side">
-        <div class="panel-title"><h2>New Category</h2></div>
-        <label>Name<input v-model="categoryForm.categoryName" /></label>
-        <label>Code<input v-model="categoryForm.categoryCode" placeholder="IT-PC" /></label>
-        <label>Asset Type<input v-model="categoryForm.assetType" /></label>
-        <label>Life Months<input v-model.number="categoryForm.defaultLifeMonth" type="number" /></label>
-        <label>Residual Rate<input v-model.number="categoryForm.defaultResidualRate" type="number" step="0.01" /></label>
-        <button class="primary wide" @click="createCategory">Save Category</button>
-      </aside>
-    </section>
-
-    <section v-if="activeTab === 'inventory'" class="workbench">
-      <div class="panel grow">
-        <div class="panel-title">
-          <h2>Inventory Tasks</h2>
-          <button class="primary" @click="createInventoryTask">Create Inventory</button>
-        </div>
-        <div class="category-grid">
-          <article v-for="task in inventoryTasks" :key="task.id">
-            <strong>{{ task.taskName }}</strong>
-            <span>{{ task.taskNo }}</span>
-            <small>{{ task.status === 2 ? 'Completed' : 'In Progress' }}</small>
-          </article>
-        </div>
-      </div>
-      <aside class="panel side">
-        <div class="panel-title">
-          <h2>Depreciation</h2>
-          <button @click="calculateDepreciation">Run Month</button>
-        </div>
-        <article v-for="record in depreciations" :key="record.id" class="list-card">
-          <strong>{{ record.assetName }}</strong>
-          <span>{{ record.depreciationMonth }}</span>
-          <small>Monthly {{ money(record.monthlyDepreciation) }} / Net {{ money(record.netValue) }}</small>
-        </article>
-      </aside>
-    </section>
-  </main>
+    <!-- Drawers -->
+    <AssetFormDrawer
+      ref="assetFormDrawerRef"
+      :categories="categories"
+      @success="loadAll"
+    />
+    <CategoryFormDrawer
+      ref="categoryFormDrawerRef"
+      @success="loadAll"
+    />
+    <OperationDrawer
+      ref="operationDrawerRef"
+      @success="loadAll"
+    />
+  </Page>
 </template>
 
 <style scoped>
-.asset-page { color: #1f2937; display: flex; flex-direction: column; gap: 16px; padding: 20px; }
-.asset-toolbar, .panel, .metric { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; }
-.asset-toolbar { align-items: center; display: flex; justify-content: space-between; padding: 18px 20px; }
-h1, h2, p { margin: 0; }
-h1 { font-size: 24px; font-weight: 700; }
-h2 { font-size: 16px; font-weight: 700; }
-.asset-toolbar p { color: #64748b; margin-top: 6px; }
-.metric-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.metric { display: flex; flex-direction: column; gap: 6px; padding: 16px; }
-.metric span, .metric small, .panel-title span, td small, .list-card small, .category-grid small { color: #64748b; }
-.metric strong { font-size: 24px; }
-.tabs { display: flex; gap: 8px; }
-button { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; color: #0f172a; cursor: pointer; min-height: 34px; padding: 0 12px; }
-button.primary, .tabs button.active { background: #1677ff; border-color: #1677ff; color: #fff; }
-button.danger { border-color: #ef4444; color: #dc2626; }
-button.wide { width: 100%; }
-.workbench { display: flex; gap: 16px; }
-.grow { flex: 1; min-width: 0; }
-.side { flex: 0 0 340px; }
-.panel { padding: 16px; }
-.panel-title { align-items: center; display: flex; justify-content: space-between; margin-bottom: 14px; }
-.panel-title.compact { align-items: flex-start; flex-direction: column; gap: 4px; }
-.filters { display: grid; gap: 8px; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 12px; }
-input, select { border: 1px solid #cbd5e1; border-radius: 6px; min-height: 34px; padding: 0 10px; width: 100%; }
-label { color: #475569; display: flex; flex-direction: column; font-size: 13px; gap: 6px; margin-bottom: 10px; }
-.table-wrap { overflow: auto; }
-table { border-collapse: collapse; min-width: 920px; width: 100%; }
-th, td { border-bottom: 1px solid #e5e7eb; padding: 10px 8px; text-align: left; }
-th { color: #475569; font-size: 13px; font-weight: 600; }
-tr.selected { background: #eff6ff; }
-td strong, td small { display: block; }
-.status { border-radius: 999px; display: inline-flex; font-size: 12px; padding: 2px 8px; }
-.status.ok { background: #dcfce7; color: #166534; }
-.status.work { background: #dbeafe; color: #1d4ed8; }
-.status.warn { background: #fef3c7; color: #92400e; }
-.status.off { background: #fee2e2; color: #991b1b; }
-.status.draft { background: #f1f5f9; color: #475569; }
-.divider { border-top: 1px solid #e5e7eb; margin: 16px 0; }
-.action-grid { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.timeline { display: flex; flex-direction: column; gap: 10px; }
-.timeline article, .list-card, .category-grid article { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; }
-.timeline span { color: #1677ff; font-size: 12px; font-weight: 700; }
-.timeline p { color: #475569; margin: 4px 0; }
-.timeline small { color: #94a3b8; }
-.list-card, .category-grid article { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
-.category-grid { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-@media (max-width: 1100px) { .metric-grid, .filters, .category-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .workbench { flex-direction: column; } .side { flex-basis: auto; } }
-@media (max-width: 700px) { .asset-toolbar { align-items: flex-start; flex-direction: column; gap: 12px; } .metric-grid, .filters, .category-grid { grid-template-columns: 1fr; } }
+.text-muted {
+  color: #8c8c8c;
+}
 </style>
